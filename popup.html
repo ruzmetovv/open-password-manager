@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      width: 360px;
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0; padding: 14px;
+      background: #0b1120;
+      color: #e2e8f0;
+      font-size: 13px;
+      color-scheme: dark;
+    }
+
+    h3 { margin: 0; font-size: 15px; color: #f8fafc; }
+
+    input, button, select {
+      padding: 8px 10px; font-size: 13px;
+      border-radius: 6px;
+      font-family: inherit;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+    }
+    input { width: 100%; margin: 4px 0; }
+    input::placeholder { color: #64748b; }
+    input:focus, select:focus {
+      outline: 2px solid rgba(124, 58, 237, 0.35);
+      border-color: #7c3aed;
+    }
+
+    button {
+      cursor: pointer; border: none; font-weight: 500;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      color: #fff;
+      transition: opacity 0.15s;
+    }
+    button:hover:not(:disabled) { opacity: 0.9; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.small { padding: 4px 8px; font-size: 12px; }
+
+    button.secondary {
+      background: #1e293b; color: #e2e8f0;
+      border: 1px solid #334155;
+    }
+    button.secondary:hover:not(:disabled) {
+      background: #334155; opacity: 1;
+    }
+
+    button.danger {
+      background: #ef4444; color: #fff;
+    }
+    button.danger:hover:not(:disabled) {
+      background: #dc2626; opacity: 1;
+    }
+
+    button.ghost {
+      background: transparent;
+      color: #a78bfa;
+      border: 1px dashed #7c3aed;
+      padding: 8px;
+    }
+    button.ghost:hover:not(:disabled) {
+      background: rgba(124, 58, 237, 0.15);
+      opacity: 1;
+    }
+
+    .hidden { display: none !important; }
+
+    /* ====== ТОПБАР ====== */
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px; gap: 4px;
+    }
+    .logo-row {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .logo-row img {
+      width: 22px; height: 22px; border-radius: 6px;
+    }
+    .topbar-buttons { display: flex; gap: 4px; }
+
+    /* ====== ПАНЕЛИ ====== */
+    .menu-panel {
+      background: #1e293b; border: 1px solid #334155;
+      border-radius: 8px; padding: 8px; margin-bottom: 8px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .menu-panel button {
+      width: 100%; text-align: left;
+      padding: 8px 10px; font-size: 12px;
+    }
+    .menu-panel .hint {
+      font-size: 11px; color: #64748b;
+      margin: 4px 0 0; line-height: 1.4;
+    }
+
+    /* ====== PENDING ====== */
+    .pending-box {
+      background: #422006; border: 1px solid #78350f;
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+    }
+    .pending-box h4 {
+      margin: 0 0 6px; font-size: 12px;
+      color: #fcd34d; font-weight: 600;
+    }
+    .pending-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 0; font-size: 12px;
+    }
+    .pending-item + .pending-item {
+      border-top: 1px solid #78350f;
+    }
+    .pending-item .grow {
+      flex: 1; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+      color: #fde68a;
+    }
+    .pending-item .grow b { color: #fef3c7; }
+    .pending-item button {
+      width: auto; padding: 4px 8px; font-size: 11px;
+    }
+
+    /* ====== DETECT ====== */
+    .detect-box {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; margin-bottom: 8px;
+      background: #052e16; border: 1px solid #166534;
+      border-radius: 8px; font-size: 12px;
+      color: #86efac;
+    }
+    .detect-box img { border-radius: 3px; flex-shrink: 0; }
+    .detect-box .grow {
+      flex: 1; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .detect-box b { color: #f8fafc; }
+
+    /* ====== ТУЛБАР ====== */
+    .toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+    .toolbar .search-wrap { flex: 1; position: relative; }
+    .toolbar .search-wrap input { padding-left: 30px; margin: 0; }
+    .toolbar .search-wrap::before {
+      content: '🔍'; position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%); font-size: 12px;
+      opacity: 0.5; pointer-events: none;
+    }
+    .sort-select {
+      width: auto; padding: 8px; font-size: 12px;
+      cursor: pointer; font-weight: 500;
+    }
+
+    /* ====== ФОРМА ДОБАВЛЕНИЯ ====== */
+    #add-form {
+      background: #1e293b;
+      padding: 10px; border-radius: 8px;
+      border: 1px solid #334155; margin-bottom: 8px;
+    }
+
+    /* ====== СПИСОК ====== */
+    #list { max-height: 380px; overflow-y: auto; }
+    #list::-webkit-scrollbar { width: 6px; }
+    #list::-webkit-scrollbar-track { background: transparent; }
+    #list::-webkit-scrollbar-thumb {
+      background: #334155; border-radius: 3px;
+    }
+    #list::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    .entry {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 8px; border-radius: 6px; margin-bottom: 2px;
+    }
+    .entry:hover { background: #1e293b; }
+    .entry > img {
+      border-radius: 3px; flex-shrink: 0;
+      margin-top: 2px; background: #334155;
+    }
+
+    .entry .label { flex: 1; min-width: 0; }
+
+    .site-row {
+      display: flex; justify-content: space-between;
+      align-items: baseline; gap: 6px;
+    }
+    .site-row .site {
+      flex: 1; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+      font-weight: 600; font-size: 13px;
+      color: #f8fafc;
+    }
+    .site-row .when {
+      flex-shrink: 0; font-size: 10px; color: #64748b;
+    }
+
+    .fields {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      margin-top: 4px; align-items: center;
+    }
+
+    /* ====== ЧИПЫ (hover-to-copy) ====== */
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 6px; font-size: 11px; font-family: inherit;
+      background: #1e293b; color: #cbd5e1;
+      border: 1px solid #334155; border-radius: 4px;
+      cursor: pointer; max-width: 100%;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+    .chip:hover {
+      background: #312e81; border-color: #4338ca; color: #c7d2fe;
+    }
+    .chip:active { transform: scale(0.98); }
+    .chip:focus-visible {
+      outline: 2px solid #7c3aed; outline-offset: 1px;
+    }
+    .chip.copied {
+      background: #052e16; border-color: #166534; color: #86efac;
+      transition: none;
+    }
+    .chip-icon { font-size: 11px; flex-shrink: 0; }
+    .chip-text {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 160px;
+    }
+    .chip-text.masked {
+      letter-spacing: 1px;
+      font-family: monospace; font-size: 12px;
+    }
+    .chip-copy {
+      opacity: 0; font-size: 10px; flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    .chip:hover .chip-copy,
+    .chip.copied .chip-copy { opacity: 1; }
+
+    .eye-btn {
+      background: transparent; border: none;
+      padding: 2px 4px; font-size: 12px; cursor: pointer;
+      color: #64748b; opacity: 0.8;
+      border-radius: 4px; line-height: 1;
+      transition: opacity 0.15s, background 0.15s, color 0.15s;
+    }
+    .eye-btn:hover {
+      opacity: 1; background: #334155; color: #cbd5e1;
+    }
+    .eye-btn:focus-visible { outline: 2px solid #7c3aed; }
+
+    .entry .actions {
+      display: flex; flex-direction: column; gap: 2px;
+      flex-shrink: 0;
+    }
+    .entry .actions button {
+      width: 26px; height: 26px; padding: 0;
+      font-size: 14px; border-radius: 6px;
+    }
+
+    /* ====== ГРУППЫ ====== */
+    .group {
+      background: #1e293b; border: 1px solid #334155;
+      border-radius: 8px; margin-bottom: 4px;
+      overflow: hidden;
+    }
+    .group-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer; user-select: none;
+      background: #1e293b;
+      transition: background 0.15s;
+    }
+    .group-header:hover { background: #334155; }
+    .group-arrow {
+      width: 12px; flex-shrink: 0;
+      font-size: 10px; color: #94a3b8; text-align: center;
+    }
+    .group-header img {
+      border-radius: 3px; flex-shrink: 0;
+      background: #334155;
+    }
+    .group-label {
+      flex: 1; min-width: 0;
+      font-weight: 600; font-size: 13px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: #f8fafc;
+    }
+    .group-count {
+      flex-shrink: 0;
+      font-size: 11px; font-weight: 500;
+      color: #cbd5e1; background: #334155;
+      padding: 1px 7px; border-radius: 10px;
+    }
+    .group-body {
+      padding: 2px 4px 4px 4px;
+      border-top: 1px solid #334155;
+    }
+    .group-body .entry {
+      margin-bottom: 2px;
+      padding-left: 14px;
+    }
+    .entry.in-group { align-items: center; }
+    .entry.in-group .fields { margin-top: 0; }
+
+    /* ====== СООБЩЕНИЯ / ПУСТО ====== */
+    .msg { font-size: 12px; min-height: 16px; margin: 4px 0 0; }
+    .msg.error { color: #f87171; }
+    .msg.ok { color: #4ade80; }
+    .empty {
+      text-align: center; color: #64748b;
+      font-size: 12px; padding: 20px 0;
+    }
+    .hint {
+      font-size: 11px; color: #64748b;
+      margin: 0 0 8px;
+    }
+
+    /* ====== МОДАЛКА ====== */
+    .modal {
+      position: fixed; inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal-inner {
+      background: #1e293b;
+      padding: 16px; border-radius: 10px;
+      width: 300px;
+      border: 1px solid #334155;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    }
+    .modal-inner h4 {
+      margin: 0 0 6px; font-size: 14px; color: #f8fafc;
+    }
+    .modal-inner .row {
+      display: flex; gap: 6px; margin-top: 8px;
+    }
+    .modal-inner .row button { flex: 1; }
+  </style>
+</head>
+<body>
+
+  <!-- ЭКРАН 1: setup -->
+  <div id="view-setup" class="hidden">
+    <h3>🔐 Создать мастер-пароль</h3>
+    <p class="hint">Пароль не сохраняется. Забыли — доступа не будет.</p>
+    <input id="setup-pass1" type="password" placeholder="Мастер-пароль (мин. 8 символов)">
+    <input id="setup-pass2" type="password" placeholder="Повторите пароль">
+    <button id="setup-btn" style="width:100%;margin-top:4px;">Создать хранилище</button>
+    <p id="setup-msg" class="msg"></p>
+  </div>
+
+  <!-- ЭКРАН 2: lock -->
+  <div id="view-lock" class="hidden">
+    <h3>🔒 Разблокировать</h3>
+    <input id="unlock-pass" type="password" placeholder="Мастер-пароль">
+    <button id="unlock-btn" style="width:100%;margin-top:4px;">Разблокировать</button>
+    <p id="unlock-msg" class="msg"></p>
+  </div>
+
+  <!-- ЭКРАН 3: vault -->
+  <div id="view-vault" class="hidden">
+    <div class="topbar">
+      <div class="logo-row">
+        <img src="icons/icon32.png" alt="" onerror="this.style.display='none'">
+        <h3>Пароли</h3>
+      </div>
+      <div class="topbar-buttons">
+        <button id="menu-btn" class="secondary small" title="Экспорт / импорт">⚙</button>
+        <button id="lock-btn" class="secondary small" title="Заблокировать">🔒</button>
+      </div>
+    </div>
+
+    <div id="menu-panel" class="menu-panel hidden">
+      <button id="export-encrypted" class="secondary">💾 Скачать зашифрованную копию</button>
+      <button id="export-plain" class="secondary">📄 Скачать открытый JSON</button>
+      <button id="import-btn" class="secondary">📥 Импорт из файла</button>
+      <input type="file" id="import-file" accept=".json,application/json" style="display:none">
+      <p class="hint">
+        🔒 Зашифрованная копия совместима с этим расширением.<br>
+        ⚠️ Открытый JSON содержит пароли в чистом виде — не оставляйте в облаке.
+      </p>
+    </div>
+
+    <div id="pending-box" class="pending-box hidden">
+      <h4>💾 Недавние входы — сохранить?</h4>
+      <div id="pending-list"></div>
+    </div>
+
+    <div id="detect-box" class="detect-box hidden">
+      <img id="detect-favicon" width="16" height="16" alt="">
+      <span class="grow" id="detect-text"></span>
+      <button id="detect-fill" class="small" style="display:none;">Заполнить</button>
+    </div>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <input id="search" placeholder="Поиск..." autocomplete="off">
+      </div>
+      <select id="sort-select" class="sort-select" title="Сортировка">
+        <option value="site-asc">А→Я</option>
+        <option value="site-desc">Я→А</option>
+        <option value="date-desc">Новые</option>
+        <option value="date-asc">Старые</option>
+      </select>
+    </div>
+
+    <button id="toggle-add" class="ghost" style="width:100%;margin-bottom:6px;">+ Новая запись</button>
+
+    <div id="add-form" class="hidden">
+      <input id="site" placeholder="Сайт (example.com)" autocomplete="off">
+      <input id="user" placeholder="Логин / email" autocomplete="off">
+      <input id="pass" type="password" placeholder="Пароль" autocomplete="new-password">
+      <button id="save-btn" style="width:100%;margin-top:4px;">Сохранить</button>
+      <p id="vault-msg" class="msg"></p>
+    </div>
+
+    <p id="vault-msg-list" class="msg"></p>
+    <div id="list"></div>
+  </div>
+
+  <!-- МОДАЛКА запроса пароля от копии -->
+  <div id="import-modal" class="modal hidden">
+    <div class="modal-inner">
+      <h4 id="import-modal-title">Пароль от копии</h4>
+      <p class="hint" style="margin:4px 0 8px;">Резервная копия защищена другим мастер-паролем</p>
+      <input id="import-pass" type="password" placeholder="Мастер-пароль от копии">
+      <div class="row">
+        <button id="import-cancel" class="secondary">Отмена</button>
+        <button id="import-confirm">Импортировать</button>
+      </div>
+      <p id="import-modal-msg" class="msg"></p>
+    </div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

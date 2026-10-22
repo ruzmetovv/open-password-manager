@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Генератор иконок — Helium Password Manager</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 640px; margin: 40px auto; padding: 0 20px;
+      color: #e2e8f0; background: #0f172a;
+    }
+    h2 { margin-bottom: 4px; }
+    p { color: #94a3b8; font-size: 14px; }
+    code { background: #1e293b; padding: 1px 6px; border-radius: 4px; font-size: 13px; color: #a78bfa; }
+    button {
+      padding: 12px 20px; font-size: 14px; font-weight: 500;
+      background: linear-gradient(135deg, #2563eb, #7c3aed); color: white;
+      border: none; border-radius: 8px; cursor: pointer;
+      margin: 16px 0;
+    }
+    button:hover { opacity: .9; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    #preview {
+      display: flex; gap: 20px; align-items: flex-end;
+      margin-top: 24px; flex-wrap: wrap;
+    }
+    .preview-item {
+      text-align: center;
+      font-size: 12px; color: #94a3b8;
+    }
+    .preview-item .frame {
+      background: #1e293b; padding: 12px; border-radius: 8px;
+      display: inline-flex; align-items: center; justify-content: center;
+      margin-bottom: 6px;
+      border: 1px solid #334155;
+    }
+    .hint { font-size: 12px; color: #64748b; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+  <h2>🎨 Генератор иконок (тёмная тема)</h2>
+  <p>
+    Скачайте 4 PNG-файла и положите в папку <code>icons/</code> расширения.
+  </p>
+
+  <button id="download-btn">⬇ Скачать все 4 иконки</button>
+
+  <div id="preview"></div>
+
+  <p class="hint">
+    Если браузер спросит «Разрешить множественную загрузку?» — нажмите <b>Разрешить</b>.
+  </p>
+
+  <script>
+    const SIZES = [16, 32, 48, 128];
+
+    const SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#1e1b4b"/>
+          <stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+        <linearGradient id="lock" x1="34" y1="26" x2="94" y2="108" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#60a5fa"/>
+          <stop offset="1" stop-color="#a78bfa"/>
+        </linearGradient>
+      </defs>
+      <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+      <path d="M46 54 V44 C46 34 54 26 64 26 C74 26 82 34 82 44 V54"
+            stroke="url(#lock)" stroke-width="9" fill="none" stroke-linecap="round"/>
+      <rect x="34" y="52" width="60" height="56" rx="11" fill="url(#lock)"/>
+      <circle cx="64" cy="72" r="7.5" fill="#1e1b4b"/>
+      <path d="M58 76 L61 90 H67 L70 76 Z" fill="#1e1b4b"/>
+    </svg>`;
+
+    function renderToCanvas(size) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const blob = new Blob([SVG], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext('2d');
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, 0, 0, size, size);
+          URL.revokeObjectURL(url);
+          resolve(canvas);
+        };
+        img.onerror = reject;
+        img.src = url;
+      });
+    }
+
+    async function buildPreviews() {
+      const preview = document.getElementById('preview');
+      const canvases = [];
+      for (const size of SIZES) {
+        const canvas = await renderToCanvas(size);
+        canvases.push({ size, canvas });
+
+        const item = document.createElement('div');
+        item.className = 'preview-item';
+        const displaySize = size === 16 ? 48 : size === 32 ? 64 : size;
+        item.innerHTML = `
+          <div class="frame">
+            <img src="${canvas.toDataURL()}" width="${displaySize}" height="${displaySize}" alt="">
+          </div>
+          <div>${size}×${size}</div>
+        `;
+        preview.appendChild(item);
+      }
+      return canvases;
+    }
+
+    async function downloadAll() {
+      const btn = document.getElementById('download-btn');
+      btn.disabled = true;
+      btn.textContent = 'Генерация...';
+
+      const canvases = await buildPreviews();
+
+      for (const { size, canvas } of canvases) {
+        const link = document.createElement('a');
+        link.download = `icon${size}.png`;
+        link.href = canvas.toDataURL('image/png');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        await new Promise(r => setTimeout(r, 150));
+      }
+
+      btn.disabled = false;
+      btn.textContent = '✅ Скачано 4 файла';
+      setTimeout(() => { btn.textContent = '⬇ Скачать все 4 иконки'; }, 2000);
+    }
+
+    document.getElementById('download-btn').onclick = downloadAll;
+    buildPreviews();
+  </script>
+
+</body>
+</html>
