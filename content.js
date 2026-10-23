@@ -109,7 +109,7 @@ function showSaveBanner(id, site, user) {
 
   const host = document.createElement('div');
   host.id = BANNER_ID;
-  host.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;';
+  host.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;';
   const shadow = host.attachShadow({ mode: 'closed' });
 
   shadow.innerHTML = `
@@ -175,6 +175,98 @@ function showSaveBanner(id, site, user) {
   setTimeout(remove, 25000);
 }
 
+// ====== ВСПЛЫВАЮЩАЯ ПОДСКАЗКА ДЛЯ АВТОЗАПОЛНЕНИЯ ПРИ КЛИКЕ ======
+const POPUP_DROPDOWN_ID = '__helium_dropdown__';
+
+function removeDropdown() {
+  const el = document.getElementById(POPUP_DROPDOWN_ID);
+  if (el) el.remove();
+}
+
+function showAutofillDropdown(targetInput, cred) {
+  removeDropdown();
+
+  const rect = targetInput.getBoundingClientRect();
+  const dropdown = document.createElement('div');
+  dropdown.id = POPUP_DROPDOWN_ID;
+  dropdown.style.cssText = `
+    position: absolute;
+    top: ${rect.bottom + window.scrollY + 4}px;
+    left: ${rect.left + window.scrollX}px;
+    z-index: 2147483647;
+  `;
+
+  const shadow = dropdown.attachShadow({ mode: 'closed' });
+  shadow.innerHTML = `
+    <style>
+      .menu {
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        padding: 6px;
+        font: 13px system-ui, sans-serif;
+        color: #f8fafc;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 220px;
+        max-width: 320px;
+        box-sizing: border-box;
+      }
+      .menu:hover {
+        background: #1e293b;
+        border-color: #7c3aed;
+      }
+      .icon { font-size: 14px; }
+      .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+      .user { font-weight: 600; color: #fff; }
+      .badge { font-size: 11px; color: #94a3b8; }
+    </style>
+    <div class="menu">
+      <span class="icon">🔐</span>
+      <div class="text">
+        <div class="user">${escapeHtml(cred.user)}</div>
+        <div class="badge">Заполнить логин и пароль</div>
+      </div>
+    </div>
+  `;
+
+  shadow.querySelector('.menu').onclick = (e) => {
+    e.stopPropagation();
+    fill(cred.user, cred.pass);
+    removeDropdown();
+  };
+
+  document.body.appendChild(dropdown);
+}
+
+document.addEventListener('focusin', (e) => {
+  const target = e.target;
+  if (!target || target.tagName !== 'INPUT') return;
+
+  const isUserField = userSelectors.some(sel => target.matches(sel));
+  const isPassField = passSelectors.some(sel => target.matches(sel));
+
+  if (isUserField || isPassField) {
+    chrome.runtime.sendMessage({ action: 'getAutoFill', host: location.hostname }, (resp) => {
+      if (resp && resp.ok && resp.cred) {
+        showAutofillDropdown(target, resp.cred);
+      }
+    });
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.(`#${POPUP_DROPDOWN_ID}`)) {
+    removeDropdown();
+  }
+});
+
+window.addEventListener('resize', removeDropdown);
+window.addEventListener('scroll', removeDropdown, true);
+
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === 'fill') {
     sendResponse({ success: fill(req.user, req.pass) });
@@ -184,4 +276,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     sendResponse(detect());
     return true;
   }
+});
+
+// Автоматическое заполнение при открытии страницы
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    chrome.runtime.sendMessage({ action: 'getAutoFill', host: location.hostname }, (resp) => {
+      if (resp && resp.ok && resp.cred) {
+        fill(resp.cred.user, resp.cred.pass);
+      }
+    });
+  }, 800);
 });

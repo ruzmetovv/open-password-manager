@@ -3,7 +3,12 @@
   "name": "Helium Password Manager",
   "version": "3.0",
   "description": "Локальный менеджер паролей с AES-256-GCM",
-  "permissions": ["storage", "activeTab", "scripting", "favicon", "clipboardWrite"],
+  "permissions": ["storage", "activeTab", "scripting", "favicon", "clipboardWrite", "identity"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo24EWnPBtWytxaTIMrp6h6N+zaSByELd+Jtjq2FP638Tr3EshWr86CMJHAQ3NC4Lf9qQ2Mk++JmQpf1z6hxxOAdV5Xfp5lDMAe7jYC1SwdLzil8as2m2MqlZpgI5c0PURsY34kTNzo7ktBawyas5WV3FurB0EK+2XE3XZiLilKE6/BLc/F7VpG2V8ZMD7/F2cdpDQ3dUzHOu2lkp2mksJJi5S08Eq0/U35shoBhOySle+bwkGsl6C8dNArqCrjqsKQP+u7bqoRJAr69kkLqF7Ht9ajOCv9QuxTJkyfCd4DuuRl8hNNz4Zt89TA9gNExddJL3jDYfxgi7Wc30xTFSOwIDAQAB",
+  "oauth2": {
+    "client_id": "509211745069-092ddg2aaf8couoor8g17nhtegdt2tll.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/drive.appdata"]
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"

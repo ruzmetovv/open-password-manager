@@ -348,6 +348,7 @@
     <input id="setup-pass1" type="password" placeholder="Мастер-пароль (мин. 8 символов)">
     <input id="setup-pass2" type="password" placeholder="Повторите пароль">
     <button id="setup-btn" style="width:100%;margin-top:4px;">Создать хранилище</button>
+    <button id="restore-drive-btn" class="secondary" style="width:100%;margin-top:8px;">📥 Восстановить из Google Drive</button>
     <p id="setup-msg" class="msg"></p>
   </div>
 
@@ -363,13 +364,15 @@
   <div id="view-vault" class="hidden">
     <div class="topbar">
       <div class="logo-row">
-        <img src="icons/icon32.png" alt="" onerror="this.style.display='none'">
+        <img src="icons/icon32.png" alt="">
         <h3>Пароли</h3>
       </div>
       <div class="topbar-buttons">
-        <button id="menu-btn" class="secondary small" title="Экспорт / импорт">⚙</button>
-        <button id="lock-btn" class="secondary small" title="Заблокировать">🔒</button>
-      </div>
+      <button id="sync-btn" class="secondary small" title="Синхронизировать Google Drive">🔄</button>
+      <button id="menu-btn" class="secondary small" title="Экспорт / импорт">📁</button>
+      <button id="settings-btn" class="secondary small" title="Настройки">⚙</button>
+      <button id="lock-btn" class="secondary small" title="Заблокировать">🔒</button>
+    </div>
     </div>
 
     <div id="menu-panel" class="menu-panel hidden">
@@ -431,6 +434,31 @@
         <button id="import-confirm">Импортировать</button>
       </div>
       <p id="import-modal-msg" class="msg"></p>
+    </div>
+  </div>
+
+  <!-- ЭКРАН: settings -->
+  <div id="view-settings" class="hidden">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0;">⚙ Настройки</h3>
+      <button id="settings-back-btn" class="secondary" style="padding:4px 8px; font-size:12px;">Назад</button>
+    </div>
+
+    <!-- Смена мастер-пароля -->
+    <div style="border-top:1px solid #374151; padding-top:10px;">
+      <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">Смена мастер-пароля</label>
+      <input id="chg-old-pass" type="password" placeholder="Текущий мастер-пароль" style="margin-bottom:6px;">
+      <input id="chg-new-pass" type="password" placeholder="Новый пароль (мин. 8 симв.)" style="margin-bottom:6px;">
+      <input id="chg-new-pass2" type="password" placeholder="Повторите новый пароль" style="margin-bottom:6px;">
+      <button id="chg-pass-btn" style="width:100%;">Обновить пароль</button>
+      <p id="chg-pass-msg" class="msg"></p>
+    </div>
+
+    <!-- Полный сброс -->
+    <div style="margin-top:16px; border-top:1px solid #374151; padding-top:10px;">
+      <label style="font-size:12px; font-weight:600; color:#ef4444; display:block; margin-bottom:4px;">Опасная зона</label>
+      <p class="hint" style="margin:0 0 8px 0;">Удалит локальные данные и позволит создать базу заново.</p>
+      <button id="factory-reset-btn" style="width:100%; background:#ef4444; border-color:#dc2626;">🗑 Сбросить хранилище</button>
     </div>
   </div>
 

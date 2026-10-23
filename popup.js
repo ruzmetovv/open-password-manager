@@ -18,7 +18,16 @@ const $ = (id) => document.getElementById(id);
 const views = { setup: $('view-setup'), lock: $('view-lock'), vault: $('view-vault') };
 
 function showView(name) {
-  Object.entries(views).forEach(([k, el]) => el.classList.toggle('hidden', k !== name));
+  ['setup', 'lock', 'vault', 'settings'].forEach(v => {
+    const el = $(`view-${v}`);
+    if (el) {
+      if (v === name) {
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+  });
 }
 
 function setMsg(id, text, isError = false) {
@@ -120,7 +129,7 @@ async function ensureCreatedAt() {
   });
   if (changed) {
     const encrypted = await encryptJSON(state.key, state.vault);
-    await chrome.storage.local.set({ vault: encrypted });
+    await chrome.storage.local.set({ vault: encrypted, updatedAt: Date.now() });
   }
 }
 
@@ -160,6 +169,31 @@ async function init() {
 }
 
 $('setup-btn').onclick = async () => {
+  const restoreBtn = $('restore-drive-btn');
+if (restoreBtn) {
+  restoreBtn.onclick = async () => {
+    restoreBtn.disabled = true;
+    setMsg('setup-msg', 'Подключение к Google Drive...');
+
+    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
+      restoreBtn.disabled = false;
+      if (resp?.ok && resp.action === 'downloaded') {
+        const local = await chrome.storage.local.get(['salt']);
+        if (local.salt) {
+          state.salt = new Uint8Array(local.salt);
+          showView('lock');
+          setMsg('unlock-msg', 'Данные загружены. Введите мастер-пароль');
+        } else {
+          setMsg('setup-msg', 'В облаке нет сохраненных данных', true);
+        }
+      } else if (resp?.ok) {
+        setMsg('setup-msg', 'Копия на Google Диске не найдена', true);
+      } else {
+        setMsg('setup-msg', resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка загрузки из облака', true);
+      }
+    });
+  };
+}
   const p1 = $('setup-pass1').value;
   const p2 = $('setup-pass2').value;
   if (p1.length < 8) return setMsg('setup-msg', 'Минимум 8 символов', true);
@@ -172,7 +206,7 @@ $('setup-btn').onclick = async () => {
     const key = await importAesKey(rawKey);
     const encrypted = await encryptJSON(key, []);
 
-    await chrome.storage.local.set({ salt: Array.from(salt), vault: encrypted });
+    await chrome.storage.local.set({ salt: Array.from(salt), vault: encrypted, updatedAt: Date.now() });
     await chrome.storage.session.set({ key: Array.from(rawKey), lastActivity: Date.now() });
 
     state.key = key; state.salt = salt; state.vault = []; state.lastActivity = Date.now();
@@ -577,7 +611,8 @@ $('save-btn').onclick = async () => {
 
 async function persistVault() {
   const encrypted = await encryptJSON(state.key, state.vault);
-  await chrome.storage.local.set({ vault: encrypted });
+  await chrome.storage.local.set({ vault: encrypted, updatedAt: Date.now() });
+  chrome.runtime.sendMessage({ action: 'forceSync' }).catch(() => {});
 }
 
 async function deleteEntry(index) {
@@ -723,19 +758,14 @@ function renderEntry(item, originalIndex, inGroup = false) {
   const actions = document.createElement('div');
   actions.className = 'actions';
 
-  const fill = document.createElement('button');
-  fill.className = 'small';
-  fill.textContent = '→';
-  fill.title = 'Заполнить на странице';
-  fill.onclick = () => fillOnPage(item);
-
+  // Синяя кнопка со стрелкой убрана — осталась только кнопка удаления
   const del = document.createElement('button');
   del.className = 'danger small';
   del.textContent = '×';
   del.title = 'Удалить';
   del.onclick = () => deleteEntry(originalIndex);
 
-  actions.append(fill, del);
+  actions.appendChild(del);
   row.appendChild(actions);
 
   return row;
@@ -787,5 +817,161 @@ function fillOnPage(item) {
     );
   });
 }
+
+const syncBtn = $('sync-btn');
+if (syncBtn) {
+  syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    setMsg('vault-msg-list', 'Синхронизация...');
+
+    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
+      syncBtn.disabled = false;
+      if (resp?.ok) {
+        if (resp.action === 'downloaded') {
+          await reloadVault();
+          renderList();
+          detectCurrentSite();
+        }
+        setMsg('vault-msg-list', 'Синхронизировано ✓');
+      } else {
+        const errText = resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка синхронизации';
+        setMsg('vault-msg-list', errText, true);
+      }
+    });
+  };
+}
+
+// Переключение экранов настроек
+const settingsBtn = $('settings-btn');
+if (settingsBtn) {
+  settingsBtn.onclick = () => showView('settings');
+}
+const settingsBackBtn = $('settings-back-btn');
+if (settingsBackBtn) {
+  settingsBackBtn.onclick = () => showView('vault');
+}
+
+// 1. Смена мастер-пароля
+const chgPassBtn = $('chg-pass-btn');
+if (chgPassBtn) {
+  chgPassBtn.onclick = async () => {
+    const oldPass = $('chg-old-pass').value;
+    const newPass = $('chg-new-pass').value;
+    const newPass2 = $('chg-new-pass2').value;
+
+    if (!oldPass || !newPass || !newPass2) {
+      return setMsg('chg-pass-msg', 'Заполните все поля', true);
+    }
+    if (newPass.length < 8) {
+      return setMsg('chg-pass-msg', 'Новый пароль должен быть от 8 символов', true);
+    }
+    if (newPass !== newPass2) {
+      return setMsg('chg-pass-msg', 'Новые пароли не совпадают', true);
+    }
+
+    try {
+      chgPassBtn.disabled = true;
+      setMsg('chg-pass-msg', 'Перешифрование базы...');
+
+      // Проверка текущего пароля
+      const oldRawKey = await deriveRawKey(oldPass, state.salt);
+      const oldKey = await importAesKey(oldRawKey);
+      const { vault } = await chrome.storage.local.get('vault');
+
+      let decryptedData;
+      try {
+        decryptedData = await decryptJSON(oldKey, vault.iv, vault.data);
+      } catch {
+        chgPassBtn.disabled = false;
+        return setMsg('chg-pass-msg', 'Неверный текущий пароль', true);
+      }
+
+      // Генерация новой соли и создание нового ключа
+      const newSalt = randomSalt();
+      const newRawKey = await deriveRawKey(newPass, newSalt);
+      const newKey = await importAesKey(newRawKey);
+
+      // Зашифрование базы новыми данными
+      const encrypted = await encryptJSON(newKey, decryptedData);
+      const updatedAt = Date.now();
+
+      // Сохранение локально и в сессии
+      await chrome.storage.local.set({
+        vault: encrypted,
+        salt: Array.from(newSalt),
+        updatedAt: updatedAt
+      });
+      await chrome.storage.session.set({ key: Array.from(newRawKey) });
+
+      state.key = newKey;
+      state.salt = newSalt;
+
+      // Синхронизация новой зашифрованной базы с Google Drive
+      setMsg('chg-pass-msg', 'Синхронизация с облаком...');
+      chrome.runtime.sendMessage({ action: 'forceSync' }, () => {
+        chgPassBtn.disabled = false;
+        $('chg-old-pass').value = '';
+        $('chg-new-pass').value = '';
+        $('chg-new-pass2').value = '';
+        setMsg('chg-pass-msg', 'Пароль успешно изменен и синхронизирован ✓');
+      });
+    } catch (e) {
+      chgPassBtn.disabled = false;
+      setMsg('chg-pass-msg', `Ошибка: ${e.message}`, true);
+    }
+  };
+}
+
+// 2. Полный сброс хранилища
+const resetBtn = $('factory-reset-btn');
+if (resetBtn) {
+  resetBtn.onclick = async () => {
+    const confirmReset = confirm('Вы уверены? Все локальные пароли будут удалены. Если они не сохранены отдельно, доступ к ним будет потерян.');
+    if (!confirmReset) return;
+
+    await chrome.storage.local.clear();
+    await chrome.storage.session.clear();
+    state.key = null;
+    state.salt = null;
+    state.items = [];
+
+    showView('setup');
+    setMsg('setup-msg', 'Хранилище очищено. Создайте новый мастер-пароль.');
+  };
+}
+
+// Восстановление из Google Drive
+const restoreBtn = $('restore-drive-btn');
+console.log('Кнопка восстановления в DOM:', restoreBtn);
+
+if (restoreBtn) {
+  restoreBtn.onclick = async () => {
+    console.log('Клик по кнопке восстановления сработал');
+    restoreBtn.disabled = true;
+    setMsg('setup-msg', 'Подключение к Google Drive...');
+
+    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
+      console.log('Ответ от background:', resp);
+      restoreBtn.disabled = false;
+      if (resp?.ok && resp.action === 'downloaded') {
+        const local = await chrome.storage.local.get(['salt']);
+        if (local.salt) {
+          state.salt = new Uint8Array(local.salt);
+          showView('lock');
+          setMsg('unlock-msg', 'Данные загружены. Введите мастер-пароль');
+        } else {
+          setMsg('setup-msg', 'В облаке нет сохраненных данных', true);
+        }
+      } else if (resp?.ok) {
+        setMsg('setup-msg', 'Копия на Google Диске не найдена', true);
+      } else {
+        setMsg('setup-msg', resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка загрузки из облака', true);
+      }
+    });
+  };
+} else {
+  console.error('Ошибка: элемент с id="restore-drive-btn" не найден в popup.html');
+}
+  
 
 init();
