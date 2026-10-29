@@ -1,977 +1,312 @@
-import {
-  deriveRawKey, importAesKey, encryptJSON, decryptJSON, randomSalt
-} from './crypto.js';
+import {deriveRawKey,importAesKey,encryptJSON,decryptJSON,randomSalt} from './crypto.js';
+const $=id=>document.getElementById(id);
+const state={key:null,raw:null,salt:null,passwords:[],cards:[],view:'lock',tab:'passwords',editPass:null,editCard:null};
+const digits=s=>String(s||'').replace(/\D/g,'');
+const norm=s=>String(s||'').trim().toLowerCase();
+const last4=s=>digits(s).slice(-4);
+const host=s=>{try{return new URL(/^https?:\/\//i.test(s)?s:'https://'+s).hostname.replace(/^www\./,'').toLowerCase();}catch{return norm(s).replace(/^www\./,'');}};
+const date=()=>new Date().toISOString().slice(0,10);
+const brand=n=>{n=digits(n);if(/^4/.test(n))return 'Visa';if(/^(5[1-5]|2[2-7])/.test(n))return 'Mastercard';if(/^3[47]/.test(n))return 'American Express';if(/^35/.test(n))return 'JCB';if(/^(6011|65|64[4-9])/.test(n))return 'Discover';return 'Банковская карта';};
+function luhn(n){let sum=0,d=false;for(let i=n.length-1;i>=0;i--){let x=+n[i];if(d){x*=2;if(x>9)x-=9;}sum+=x;d=!d;}return sum%10===0;}
+function expiry(s){const m=String(s).trim().match(/^(\d{1,2})\s*[/.-]\s*(\d{2}|\d{4})$/);if(!m||+m[1]<1||+m[1]>12)return null;const y=m[2].length===2?2000+ +m[2]:+m[2],now=new Date();if(y<now.getFullYear()||(y===now.getFullYear()&&+m[1]<now.getMonth()+1))return null;return String(+m[1]).padStart(2,'0')+'/'+String(y).slice(-2);}
+function show(view){state.view=view;for(const id of ['setup','lock','main','editpass','editcard','settings'])$('view-'+id).classList.toggle('hidden',id!==view);}
+function msg(text,error=false,id='main-msg'){$(id).textContent=text;$(id).className='msg'+(error?' error':'');}
+function activePasswords(){return state.passwords.filter(p=>!p.deleted);}
+function activeCards(){return state.cards.filter(c=>!c.deleted);}
+async function readData(){
+ const data=await chrome.storage.local.get(['vault','cardsVault','salt']);
+ if(!state.key)return;
+ state.passwords=data.vault?await decryptJSON(state.key,data.vault.iv,data.vault.data):[];
+ state.cards=data.cardsVault?await decryptJSON(state.key,data.cardsVault.iv,data.cardsVault.data):[];
+ if(!Array.isArray(state.passwords)||!Array.isArray(state.cards))throw Error('Повреждённое хранилище');
+}
+async function persist(list){
+ if(!state.key)throw Error('Сначала разблокируй хранилище');
+ const now=Date.now(), changes={updatedAt:now};
+ if(list==='passwords')changes.vault=await encryptJSON(state.key,state.passwords);
+ if(list==='cards'){
+   changes.cardsVault=await encryptJSON(state.key,state.cards);
+   changes.cardsUpdatedAt=now;
+ }
+ await chrome.storage.local.set(changes);
+ await chrome.storage.session.set({lastActivity:now});
+ chrome.runtime.sendMessage({action:'scheduleSync'}).catch(()=>{});
+}
+async function copyText(s){await navigator.clipboard.writeText(s);msg('Скопировано');}
+function icon(text){const e=document.createElement('span');e.className='avatar';e.textContent=text;return e;}
+const faviconAttempts = new Set();
+let faviconPersistTimer = null;
+function siteFaviconUrl(site) {
+ const domain=host(site);
+ if(!/^[a-z0-9.-]+$/i.test(domain) || !domain.includes('.'))return '';
+ return chrome.runtime.getURL('/_favicon/?pageUrl='+encodeURIComponent('https://'+domain+'/')+'&size=32');
+}
+function siteIcon(entry){
+ const domain=host(entry.site);
+ const tile=icon((domain.split('.')[0]||'?').slice(0,1).toUpperCase());
+ tile.classList.add('site-icon');
+ const src=typeof entry.iconData==='string' && /^data:image\/png;base64,/.test(entry.iconData)
+   ? entry.iconData : siteFaviconUrl(entry.site);
+ if(!src)return tile;
+ const image=document.createElement('img');
+ image.alt='';image.width=28;image.height=28;image.decoding='async';
+ // The letter is ONLY a fallback. A loaded favicon replaces it entirely.
+ // Previously both were in the same CSS grid, so the favicon was clipped below the letter.
+ image.style.display='none';
+ image.onload=()=>{
+   if(!tile.isConnected)return;
+   image.style.display='block';
+   tile.replaceChildren(image);
+   if(entry.iconData || faviconAttempts.has(domain) || entry.deleted || !state.key)return;
+   faviconAttempts.add(domain);
+   // Best-effort persistence in the encrypted vault. Browser favicons may block canvas extraction.
+   try{
+     if(!image.naturalWidth||!image.naturalHeight)return;
+     const c=document.createElement('canvas');c.width=32;c.height=32;
+     c.getContext('2d').drawImage(image,0,0,32,32);
+     const data=c.toDataURL('image/png');
+     if(data.length<=400||data.length>=24000)return;
+     let updated=false;
+     for(const item of state.passwords){
+       if(!item.deleted && host(item.site)===domain && !item.iconData){item.iconData=data;updated=true;}
+     }
+     if(updated){
+       clearTimeout(faviconPersistTimer);
+       faviconPersistTimer=setTimeout(()=>{
+         if(state.key)persist('passwords').catch(()=>{});
+       },2000);
+     }
+   }catch{/* Invalid/tainted favicon: retain browser favicon, leave letter fallback for errors. */}
+ };
+ image.onerror=()=>image.remove();
+ // Keep the placeholder visible until the image has loaded.
+ tile.appendChild(image);
+ image.src=src;
+ return tile;
+}
+function cardLogo(brandName){
+ const map={'Visa':'visa','Mastercard':'mastercard','American Express':'amex','Discover':'discover','JCB':'jcb'};
+ const file=map[brandName];
+ const wrap=icon('💳');wrap.classList.add('card-icon');
+ if(file){const image=document.createElement('img');image.src='assets/cards/'+file+'.svg';image.alt=brandName;image.width=43;image.height=28;wrap.replaceChildren(image);}
+ return wrap;
+}
 
-const state = {
-  key: null,
-  vault: [],
-  salt: null,
-  lastActivity: 0,
-  query: '',
-  sortPref: 'site-asc',
-  expandedGroups: {},
-  detectedDomain: ''
+function button(label,title,click,cls='secondary'){const e=document.createElement('button');e.className=cls;e.textContent=label;e.title=title;e.addEventListener('click',click);return e;}
+function copyAction(label,title,click){
+ const e=button(label,title,click);
+ e.classList.add('copy-action');
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+ svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','14');svg.setAttribute('height','14');
+ svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');
+ svg.setAttribute('stroke-width','1.9');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');
+ const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+ path.setAttribute('d','M8 4h10a2 2 0 0 1 2 2v11M6 8h10a2 2 0 0 1 2 2v10H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z');
+ svg.appendChild(path);e.prepend(svg);
+ return e;
+}
+function drawPasswords(){
+ const box=$('password-list');box.replaceChildren();
+ const query=norm($('pass-search').value);
+ const entries=activePasswords().filter(p=>norm(p.site).includes(query)||norm(p.user).includes(query)).sort((a,b)=>(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0));
+ if(!entries.length){const div=document.createElement('div');div.className='empty';div.textContent=query?'Ничего не найдено':'Пока нет паролей';box.append(div);return;}
+ for(const p of entries){
+  const row=document.createElement('div');row.className='item';row.append(siteIcon(p));
+  const info=document.createElement('div');info.className='info';const top=document.createElement('strong');top.textContent=p.site;const bottom=document.createElement('small');bottom.textContent=p.user;info.append(top,bottom);row.append(info);
+  const actions=document.createElement('div');actions.className='actions';
+  actions.append(copyAction('Логин','Скопировать логин',()=>copyText(p.user).catch(()=>msg('Нет доступа к буферу',true))));
+  actions.append(copyAction('Пароль','Скопировать пароль',()=>copyText(p.pass).catch(()=>msg('Нет доступа к буферу',true))));
+  actions.append(button('✎','Редактировать',()=>editPass(p)));
+  actions.append(button('×','Удалить',async()=>{
+   if(!confirm('Удалить пароль для '+p.site+'?'))return;
+   state.passwords=state.passwords.map(x=>x===p?{...x,deleted:true,pass:'',updatedAt:Date.now()}:x);
+   try{await persist('passwords');drawPasswords();msg('Пароль удалён');}catch(e){msg(e.message,true);}
+  }));
+  row.append(actions);box.append(row);
+ }
+}
+function drawCards(){
+ const box=$('card-list');box.replaceChildren();
+ const query=norm($('card-search').value);
+ const entries=activeCards().filter(c=>[c.label,c.brand,c.holder,last4(c.number)].some(x=>norm(x).includes(query))).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+ if(!entries.length){const div=document.createElement('div');div.className='empty';div.textContent=query?'Ничего не найдено':'Пока нет банковских карт';box.append(div);return;}
+ for(const c of entries){
+  const row=document.createElement('div');row.className='item';row.append(cardLogo(c.brand));
+  const info=document.createElement('div');info.className='info';const top=document.createElement('strong');top.textContent=c.label||c.brand||'Карта';const bottom=document.createElement('small');bottom.textContent='•••• '+last4(c.number)+' · '+c.expiry;info.append(top,bottom);row.append(info);
+  const actions=document.createElement('div');actions.className='actions';
+  actions.append(button('↗ Заполнить','Заполнить на открытом сайте' ,async()=>{
+   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+   if(!tab?.url?.startsWith('https://'))return msg('Открой HTTPS-страницу оплаты',true);
+   try{
+    // The card is only shared after the user explicitly presses this action.
+    const resp=await chrome.tabs.sendMessage(tab.id,{action:'opassFillCardFromPopup',card:{number:c.number,holder:c.holder,expiry:c.expiry,cvv:c.cvv||''}});
+    msg(resp?.ok?'Поля карты заполнены':'На странице не найдены подходящие поля',!resp?.ok);
+   }catch{msg('Автозаполнение недоступно на этой странице',true);}
+  }));
+  actions.append(button('✎','Редактировать',()=>editCard(c)));
+  actions.append(button('×','Удалить',async()=>{
+   if(!confirm('Удалить карту •••• '+last4(c.number)+'?'))return;
+   state.cards=state.cards.map(x=>x===c?{...x,deleted:true,number:'',cvv:'',updatedAt:Date.now()}:x);
+   try{await persist('cards');drawCards();msg('Карта удалена');}catch(e){msg(e.message,true);}
+  }));
+  row.append(actions);box.append(row);
+ }
+}
+function chooseTab(tab){state.tab=tab;$('passwords-panel').classList.toggle('hidden',tab!=='passwords');$('cards-panel').classList.toggle('hidden',tab!=='cards');$('tab-passwords').classList.toggle('active',tab==='passwords');$('tab-cards').classList.toggle('active',tab==='cards');tab==='cards'?drawCards():drawPasswords();}
+function editPass(p){state.editPass=p||null;$('pass-title').textContent=p?'Изменить пароль':'Новый пароль';$('pass-site').value=p?.site||'';$('pass-user').value=p?.user||'';$('pass-password').value=p?.pass||'';show('editpass');}
+function editCard(c){state.editCard=c||null;$('card-title').textContent=c?'Редактировать карту':'Добавить карту';$('card-label').value=c?.label||'';$('card-number').value=c?.number||'';$('card-holder').value=c?.holder||'';$('card-expiry').value=c?.expiry||'';$('card-cvv').value=c?.cvv||'';updatePreview();show('editcard');}
+function updatePreview(){
+ const n=digits($('card-number').value),b=brand(n);
+ const file={'Visa':'visa','Mastercard':'mastercard','American Express':'amex','Discover':'discover','JCB':'jcb'}[b];
+ const logo=$('preview-logo');logo.classList.toggle('hidden',!file);
+ if(file){logo.src='assets/cards/'+file+'.svg';logo.alt=b;}
+ $('preview-brand').textContent=!n?'oPass CARD':file?'':b;
+ $('preview-number').textContent=n?'•••• •••• •••• '+n.slice(-4):'•••• •••• •••• ••••';
+ $('preview-holder').textContent=$('card-holder').value||'CARDHOLDER';
+ $('preview-expiry').textContent=$('card-expiry').value||'MM/YY';
+}
+async function loadPending(){
+ const box=$('pending');box.replaceChildren();
+ const resp=await chrome.runtime.sendMessage({action:'pending'}).catch(()=>null);
+ if(!resp?.ok||!resp.items?.length){box.classList.add('hidden');return;}
+ box.classList.remove('hidden');
+ for(const p of resp.items){
+  const row=document.createElement('div');row.className='banner';const text=document.createElement('strong');text.textContent=p.type==='card'?`💳 Сохранить карту •••• ${p.last4}?`:`🔐 Сохранить пароль для ${p.site}?`;
+  const inner=document.createElement('div');inner.className='row topgap';inner.append(
+   button('Не сейчас','Не сохранять',async()=>{await chrome.runtime.sendMessage({action:'rejectPending',id:p.id});loadPending();},'secondary'),
+   button('Сохранить','Сохранить в зашифрованное хранилище',async()=>{const res=await chrome.runtime.sendMessage({action:'confirmPending',id:p.id});if(res?.ok){await readData();drawCards();drawPasswords();loadPending();msg('Сохранено');}else msg('Не удалось сохранить',true);},'')
+  );row.append(text,inner);box.append(row);
+ }
+}
+async function unlock(pass){
+ const raw=await deriveRawKey(pass,state.salt),key=await importAesKey(raw);
+ const {vault}=await chrome.storage.local.get('vault');if(!vault)throw Error('Хранилище отсутствует');
+ await decryptJSON(key,vault.iv,vault.data); // Validates master password.
+ state.key=key;state.raw=raw;
+ await chrome.storage.session.set({key:Array.from(raw),lastActivity:Date.now()});
+ await readData();show('main');chooseTab(state.tab);loadPending();
+}
+async function startup(){
+ const local=await chrome.storage.local.get(['salt','vault']);
+ if(!local.salt||!local.vault){show('setup');return;}
+ state.salt=new Uint8Array(local.salt);
+ const s=await chrome.storage.session.get(['key','lastActivity']);
+ if(s.key&&Date.now()-s.lastActivity<15*60*1000){
+  try{state.raw=new Uint8Array(s.key);state.key=await importAesKey(state.raw);await readData();show('main');chooseTab('passwords');loadPending();return;}catch{state.key=null;}
+ }
+ show('lock');
+}
+$('setup-btn').onclick=async()=>{
+ const p=$('setup1').value;if(p.length<8)return msg('Мастер-пароль должен содержать минимум 8 символов',true,'setup-msg');
+ if(p!==$('setup2').value)return msg('Пароли не совпадают',true,'setup-msg');
+ $('setup-btn').disabled=true;
+ try{
+  const salt=randomSalt(),raw=await deriveRawKey(p,salt),key=await importAesKey(raw);
+  const vault=await encryptJSON(key,[]),cardsVault=await encryptJSON(key,[]);
+  await chrome.storage.local.set({salt:Array.from(salt),vault,cardsVault,updatedAt:Date.now()});
+  state.salt=salt;state.raw=raw;state.key=key;state.passwords=[];state.cards=[];
+  await chrome.storage.session.set({key:Array.from(raw),lastActivity:Date.now()});
+  show('main');chooseTab('passwords');
+ }catch(e){msg(e.message,true,'setup-msg');}finally{$('setup-btn').disabled=false;}
 };
-
-const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
-const $ = (id) => document.getElementById(id);
-const views = { setup: $('view-setup'), lock: $('view-lock'), vault: $('view-vault') };
-
-function showView(name) {
-  ['setup', 'lock', 'vault', 'settings'].forEach(v => {
-    const el = $(`view-${v}`);
-    if (el) {
-      if (v === name) {
-        el.classList.remove('hidden');
-      } else {
-        el.classList.add('hidden');
-      }
-    }
-  });
-}
-
-function setMsg(id, text, isError = false) {
-  const el = $(id);
-  if (!el) return;
-  el.textContent = text;
-  el.className = 'msg ' + (isError ? 'error' : 'ok');
-  if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 2000);
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
-  );
-}
-
-function touchActivity() {
-  state.lastActivity = Date.now();
-  chrome.storage.session.set({ lastActivity: state.lastActivity });
-}
-
-function arraysEqual(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-function shortDate(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const now = new Date();
-  const diffDays = Math.floor((now - d) / 86400000);
-  if (diffDays === 0) return 'сегодня';
-  if (diffDays === 1) return 'вчера';
-  if (diffDays < 7) return `${diffDays} дн.`;
-  const p = n => String(n).padStart(2, '0');
-  const sameYear = d.getFullYear() === now.getFullYear();
-  return sameYear
-    ? `${p(d.getDate())}.${p(d.getMonth() + 1)}`
-    : `${p(d.getDate())}.${p(d.getMonth() + 1)}.${String(d.getFullYear()).slice(-2)}`;
-}
-
-function domainKey(site) {
-  let s = String(site).trim().toLowerCase();
-  s = s.replace(/^https?:\/\//, '');
-  s = s.replace(/^www\./, '');
-  s = s.replace(/\/$/, '');
-  return s;
-}
-
-function faviconUrl(site, size = 32) {
-  if (!site) return '';
-  let url = site.trim();
-  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-  try { new URL(url); } catch { return ''; }
-  return chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=${size}`);
-}
-function makeFaviconImg(site, size = 16) {
-  const img = document.createElement('img');
-  img.width = size; img.height = size; img.alt = '';
-  const src = faviconUrl(site);
-  if (src) img.src = src;
-  img.onerror = () => { img.style.visibility = 'hidden'; };
-  return img;
-}
-
-async function copyToClipboard(text, chip) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;opacity:0;';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
-    }
-    chip.classList.add('copied');
-    const copyIcon = chip.querySelector('.chip-copy');
-    const orig = copyIcon.textContent;
-    copyIcon.textContent = '✓';
-    setMsg('vault-msg-list', 'Скопировано');
-    touchActivity();
-    setTimeout(() => { chip.classList.remove('copied'); copyIcon.textContent = orig; }, 1200);
-  } catch {
-    setMsg('vault-msg-list', 'Не удалось скопировать', true);
-  }
-}
-
-async function ensureCreatedAt() {
-  let changed = false;
-  state.vault.forEach((item, i) => {
-    if (typeof item.createdAt !== 'number') {
-      item.createdAt = Date.now() - (state.vault.length - i) * 1000;
-      changed = true;
-    }
-  });
-  if (changed) {
-    const encrypted = await encryptJSON(state.key, state.vault);
-    await chrome.storage.local.set({ vault: encrypted, updatedAt: Date.now() });
-  }
-}
-
-async function init() {
-  const local = await chrome.storage.local.get(['salt', 'vault', 'sortPref', 'expandedGroups']);
-  const session = await chrome.storage.session.get(['key', 'lastActivity']);
-
-  state.sortPref = local.sortPref || 'site-asc';
-  state.expandedGroups = local.expandedGroups || {};
-  $('sort-select').value = state.sortPref;
-
-  if (!local.salt) { showView('setup'); return; }
-  state.salt = new Uint8Array(local.salt);
-
-  const fresh = session.key && session.lastActivity
-    && (Date.now() - session.lastActivity) < LOCK_TIMEOUT_MS;
-
-  if (fresh) {
-    try {
-      state.key = await importAesKey(new Uint8Array(session.key));
-      state.vault = await decryptJSON(state.key, local.vault.iv, local.vault.data);
-      state.lastActivity = session.lastActivity;
-      await ensureCreatedAt();
-      showView('vault');
-      renderList();
-      detectCurrentSite();
-      loadPending();
-      return;
-    } catch {
-      await lock();
-      return;
-    }
-  }
-
-  if (session.key) await chrome.storage.session.remove(['key', 'lastActivity']);
-  showView('lock');
-}
-
-$('setup-btn').onclick = async () => {
-  const restoreBtn = $('restore-drive-btn');
-if (restoreBtn) {
-  restoreBtn.onclick = async () => {
-    restoreBtn.disabled = true;
-    setMsg('setup-msg', 'Подключение к Google Drive...');
-
-    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
-      restoreBtn.disabled = false;
-      if (resp?.ok && resp.action === 'downloaded') {
-        const local = await chrome.storage.local.get(['salt']);
-        if (local.salt) {
-          state.salt = new Uint8Array(local.salt);
-          showView('lock');
-          setMsg('unlock-msg', 'Данные загружены. Введите мастер-пароль');
-        } else {
-          setMsg('setup-msg', 'В облаке нет сохраненных данных', true);
-        }
-      } else if (resp?.ok) {
-        setMsg('setup-msg', 'Копия на Google Диске не найдена', true);
-      } else {
-        setMsg('setup-msg', resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка загрузки из облака', true);
-      }
-    });
-  };
-}
-  const p1 = $('setup-pass1').value;
-  const p2 = $('setup-pass2').value;
-  if (p1.length < 8) return setMsg('setup-msg', 'Минимум 8 символов', true);
-  if (p1 !== p2)     return setMsg('setup-msg', 'Пароли не совпадают', true);
-
-  $('setup-btn').disabled = true;
-  try {
-    const salt = randomSalt();
-    const rawKey = await deriveRawKey(p1, salt);
-    const key = await importAesKey(rawKey);
-    const encrypted = await encryptJSON(key, []);
-
-    await chrome.storage.local.set({ salt: Array.from(salt), vault: encrypted, updatedAt: Date.now() });
-    await chrome.storage.session.set({ key: Array.from(rawKey), lastActivity: Date.now() });
-
-    state.key = key; state.salt = salt; state.vault = []; state.lastActivity = Date.now();
-    showView('vault'); renderList(); detectCurrentSite(); loadPending();
-    setMsg('vault-msg-list', 'Хранилище создано');
-  } catch (e) {
-    setMsg('setup-msg', 'Ошибка: ' + e.message, true);
-  } finally {
-    $('setup-btn').disabled = false;
-  }
+$('unlock-btn').onclick=async()=>{try{await unlock($('unlock-pass').value);$('unlock-pass').value='';}catch(e){msg('Неверный мастер-пароль или повреждённое хранилище',true,'lock-msg');}};
+$('unlock-pass').onkeydown=e=>{if(e.key==='Enter')$('unlock-btn').click();};
+$('restore-btn').onclick=async()=>{
+ $('restore-btn').disabled=true;msg('Подключаем Google Drive…',false,'setup-msg');
+ try{const r=await chrome.runtime.sendMessage({action:'forceSync'});if(r?.ok&&r.action==='downloaded'){const data=await chrome.storage.local.get('salt');state.salt=new Uint8Array(data.salt);show('lock');msg('Копия загружена — введи мастер-пароль',false,'lock-msg');}else msg(r.error||'Резервной копии нет',true,'setup-msg');}catch(e){msg(e.message,true,'setup-msg');}
+ finally{$('restore-btn').disabled=false;}
 };
-
-$('unlock-btn').onclick = async () => {
-  const pass = $('unlock-pass').value;
-  if (!pass) return setMsg('unlock-msg', 'Введите пароль', true);
-
-  $('unlock-btn').disabled = true;
-  try {
-    const local = await chrome.storage.local.get(['vault']);
-    const rawKey = await deriveRawKey(pass, state.salt);
-    const key = await importAesKey(rawKey);
-    const vault = await decryptJSON(key, local.vault.iv, local.vault.data);
-
-    await chrome.storage.session.set({ key: Array.from(rawKey), lastActivity: Date.now() });
-
-    state.key = key; state.vault = vault; state.lastActivity = Date.now();
-    $('unlock-pass').value = '';
-
-    await ensureCreatedAt();
-    showView('vault'); renderList(); detectCurrentSite(); loadPending();
-  } catch {
-    setMsg('unlock-msg', 'Неверный мастер-пароль', true);
-  } finally {
-    $('unlock-btn').disabled = false;
-  }
+$('tab-passwords').onclick=()=>chooseTab('passwords');$('tab-cards').onclick=()=>chooseTab('cards');
+let searchTimer;
+$('pass-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(drawPasswords,90);};
+$('card-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(drawCards,90);};
+$('add-pass').onclick=()=>editPass();$('add-card').onclick=()=>editCard();$('new-card-bottom').onclick=()=>editCard();
+$('pass-cancel').onclick=()=>show('main');
+$('pass-form').onsubmit=async e=>{
+ e.preventDefault();const site=$('pass-site').value.trim(),user=$('pass-user').value.trim(),pass=$('pass-password').value;
+ if(!site||!user||!pass)return msg('Все поля обязательны',true,'pass-msg');
+ const previous=state.editPass,now=Date.now();
+ if(previous && (norm(site)!==norm(previous.site)||norm(user)!==norm(previous.user))){
+  state.passwords=state.passwords.map(x=>x===previous?{...x,deleted:true,pass:'',updatedAt:now}:x);
+ }
+ state.passwords=state.passwords.filter(x=>x!==previous);
+ state.passwords.push({site,user,pass,iconData:previous&&host(previous.site)===host(site)?previous.iconData:undefined,createdAt:previous?.createdAt||now,updatedAt:now});
+ try{await persist('passwords');show('main');drawPasswords();msg('Пароль сохранён');}catch(err){msg(err.message,true,'pass-msg');}
 };
-$('unlock-pass').addEventListener('keydown', e => {
-  if (e.key === 'Enter') $('unlock-btn').click();
-});
-
-async function lock() {
-  state.key = null; state.vault = [];
-  await chrome.storage.session.remove(['key', 'lastActivity']);
-  showView('lock');
-}
-$('lock-btn').onclick = lock;
-
-async function loadPending() {
-  try {
-    const resp = await chrome.runtime.sendMessage({ action: 'getPending' });
-    const pending = resp?.pending || [];
-    const box = $('pending-box');
-    const list = $('pending-list');
-    list.innerHTML = '';
-    if (pending.length === 0) { box.classList.add('hidden'); return; }
-    box.classList.remove('hidden');
-
-    pending.forEach(p => {
-      const row = document.createElement('div');
-      row.className = 'pending-item';
-
-      const label = document.createElement('span');
-      label.className = 'grow';
-      label.innerHTML = `🔐 <b>${escapeHtml(p.site)}</b> — ${escapeHtml(p.user || 'без логина')}`;
-
-      const save = document.createElement('button');
-      save.className = 'small';
-      save.textContent = 'Сохранить';
-      save.onclick = () => confirmPending(p.id);
-
-      const skip = document.createElement('button');
-      skip.className = 'secondary small';
-      skip.textContent = '×';
-      skip.title = 'Не сохранять';
-      skip.onclick = () => removePending(p.id);
-
-      row.append(label, save, skip);
-      list.appendChild(row);
-    });
-  } catch {}
-}
-
-async function confirmPending(id) {
-  try {
-    const resp = await chrome.runtime.sendMessage({ action: 'confirmPending', id });
-    if (resp?.ok) {
-      await reloadVault();
-      renderList();
-      detectCurrentSite();
-      await loadPending();
-      setMsg('vault-msg-list', resp.duplicate ? 'Уже было сохранено' : 'Сохранено');
-      touchActivity();
-    } else if (resp?.error === 'locked') {
-      setMsg('vault-msg-list', 'Разблокируйте хранилище', true);
-    } else {
-      setMsg('vault-msg-list', 'Ошибка: ' + (resp?.error || 'неизвестно'), true);
-    }
-  } catch {
-    setMsg('vault-msg-list', 'Ошибка сообщения с фоновым скриптом', true);
-  }
-}
-
-async function removePending(id) {
-  try { await chrome.runtime.sendMessage({ action: 'removePending', id }); } catch {}
-  await loadPending();
-}
-
-async function reloadVault() {
-  if (!state.key) return;
-  const { vault } = await chrome.storage.local.get('vault');
-  if (!vault) return;
-  state.vault = await decryptJSON(state.key, vault.iv, vault.data);
-  await ensureCreatedAt();
-}
-
-chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes.pendingSaves) loadPending();
-});
-
-$('menu-btn').onclick = () => $('menu-panel').classList.toggle('hidden');
-
-function downloadFile(filename, content, mime = 'application/json') {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-function dateStamp() { return new Date().toISOString().slice(0, 10); }
-
-$('export-encrypted').onclick = async () => {
-  const local = await chrome.storage.local.get(['vault']);
-  const backup = {
-    format: 'helium-pm-backup', version: 1,
-    createdAt: new Date().toISOString(),
-    salt: Array.from(state.salt), vault: local.vault
-  };
-  downloadFile(`helium-pm-backup-${dateStamp()}.json`, JSON.stringify(backup, null, 2));
-  setMsg('vault-msg-list', 'Зашифрованная копия скачана');
-  touchActivity();
+$('card-cancel').onclick=$('card-cancel-top').onclick=()=>show('main');
+for(const id of ['card-number','card-holder','card-expiry'])$(id).oninput=updatePreview;
+$('card-form').onsubmit=async e=>{
+ e.preventDefault();const number=digits($('card-number').value),cvv=digits($('card-cvv').value),holder=$('card-holder').value.trim(),exp=expiry($('card-expiry').value);
+ if(number.length<12||number.length>19||!luhn(number))return msg('Неверный номер карты',true,'card-msg');
+ if(!holder)return msg('Введите имя владельца',true,'card-msg');
+ if(!exp)return msg('Неверный или истёкший срок действия',true,'card-msg');
+ if(cvv&&!/^\d{3,4}$/.test(cvv))return msg('CVV/CVC должен содержать 3–4 цифры',true,'card-msg');
+ const now=Date.now(),prev=state.editCard;
+ const card={id:prev?.id||crypto.randomUUID(),number,cvv,holder,expiry:exp,label:$('card-label').value.trim()||brand(number),brand:brand(number),createdAt:prev?.createdAt||now,updatedAt:now};
+ state.cards=state.cards.filter(x=>x!==prev);
+ state.cards.push(card);
+ try{await persist('cards');show('main');chooseTab('cards');msg('Карта зашифрована и сохранена');}catch(err){msg(err.message,true,'card-msg');}
 };
-
-$('export-plain').onclick = () => {
-  if (!confirm('⚠️ Открытый JSON содержит пароли в незашифрованном виде.\n\nПродолжить?')) return;
-  downloadFile(`helium-pm-plain-${dateStamp()}.json`, JSON.stringify(state.vault, null, 2));
-  setMsg('vault-msg-list', 'Открытый JSON скачан');
-  touchActivity();
+async function sync(){msg('Синхронизация с Google Drive…');const r=await chrome.runtime.sendMessage({action:'forceSync'});if(r?.ok){await readData();drawPasswords();drawCards();msg('Синхронизировано ✓');}else msg('Ошибка: '+(r?.error||'нет подключения'),true);}
+$('sync-btn').onclick=sync;$('settings-sync').onclick=async()=>{const r=await chrome.runtime.sendMessage({action:'forceSync'});if(r?.ok){await readData();msg('Синхронизировано ✓',false,'settings-msg');}else msg(r?.error||'Ошибка',true,'settings-msg');};
+$('lock-btn').onclick=async()=>{clearTimeout(faviconPersistTimer);state.key=null;state.raw=null;state.passwords=[];state.cards=[];await chrome.storage.session.remove(['key','lastActivity','pendingEncrypted']);show('lock');};
+$('settings-btn').onclick=async()=>{
+ const vals=await chrome.storage.local.get('settings');
+ const s=vals.settings||{};
+ for(const [id,key] of [['setting-fill-password','fillPasswords'],['setting-fill-card','fillCards'],['setting-capture-password','capturePasswords'],['setting-capture-card','captureCards']])$(id).checked=s[key]!==false;
+ show('settings');
 };
-
-$('import-btn').onclick = () => $('import-file').click();
-
-$('import-file').onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = '';
-  try {
-    const text = await file.text();
-    await handleImport(text);
-  } catch {
-    setMsg('vault-msg-list', 'Ошибка чтения файла', true);
-  }
+$('settings-back').onclick=()=>{show('main');chooseTab(state.tab);};
+for(const [id,key] of [['setting-fill-password','fillPasswords'],['setting-fill-card','fillCards'],['setting-capture-password','capturePasswords'],['setting-capture-card','captureCards']]){
+ $(id).onchange=async e=>{const vals=await chrome.storage.local.get('settings');await chrome.storage.local.set({settings:{...vals.settings,[key]:e.target.checked}});};
+}
+function download(filename,obj){const data=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});const url=URL.createObjectURL(data),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('export-encrypted').onclick=async()=>{
+ const l=await chrome.storage.local.get(['vault','cardsVault','salt','updatedAt']);
+ download('opass-encrypted-'+date()+'.json',{format:'helium-pm-backup',version:2,createdAt:new Date().toISOString(),salt:l.salt,vault:l.vault,cardsVault:l.cardsVault,updatedAt:l.updatedAt});
+ msg('Зашифрованная резервная копия сохранена',false,'settings-msg');
 };
-
-function mergeVaults(existing, incoming) {
-  const keyOf = x => x.site.trim().toLowerCase() + '|' + x.user.trim().toLowerCase();
-  const map = new Map(existing.map(x => [keyOf(x), x]));
-  for (const item of incoming) map.set(keyOf(item), item);
-  return [...map.values()];
-}
-
-function normalizeEntry(x, i) {
-  return {
-    site: x.site, user: x.user, pass: x.pass,
-    createdAt: typeof x.createdAt === 'number' ? x.createdAt : Date.now() + i
-  };
-}
-
-async function handleImport(text) {
-  let data;
-  try { data = JSON.parse(text); }
-  catch { return setMsg('vault-msg-list', 'Некорректный JSON', true); }
-
-  let incoming = null;
-
-  if (data && data.format === 'helium-pm-backup' && Array.isArray(data.salt) && data.vault) {
-    const backupSalt = new Uint8Array(data.salt);
-    const sameSalt = arraysEqual(backupSalt, state.salt);
-
-    let backupKey;
-    if (sameSalt) backupKey = state.key;
-    else {
-      const pass = await promptPassword('Пароль от резервной копии');
-      if (!pass) return;
-      try {
-        const raw = await deriveRawKey(pass, backupSalt);
-        backupKey = await importAesKey(raw);
-      } catch {
-        return setMsg('vault-msg-list', 'Ошибка импорта', true);
-      }
-    }
-
-    try {
-      incoming = await decryptJSON(backupKey, data.vault.iv, data.vault.data);
-    } catch {
-      return setMsg('vault-msg-list', 'Неверный пароль или файл повреждён', true);
-    }
-    if (!Array.isArray(incoming)) {
-      return setMsg('vault-msg-list', 'Некорректные данные в копии', true);
-    }
-  } else if (Array.isArray(data)) {
-    const ok = data.every(x => x && typeof x.site === 'string'
-      && typeof x.user === 'string' && typeof x.pass === 'string');
-    if (!ok) return setMsg('vault-msg-list', 'Неверный формат записей', true);
-    incoming = data;
-  } else {
-    return setMsg('vault-msg-list', 'Неизвестный формат файла', true);
-  }
-
-  if (incoming.length === 0) return setMsg('vault-msg-list', 'Файл пуст');
-  incoming = incoming.map(normalizeEntry);
-
-  let target;
-  if (state.vault.length === 0) target = incoming;
-  else {
-    const replace = confirm(
-      `Найдено ${incoming.length} записей.\nТекущих записей: ${state.vault.length}.\n\n` +
-      `OK — заменить все текущие\n` +
-      `Отмена — объединить (по сайту и логину, входящие перекрывают)`
-    );
-    target = replace ? incoming : mergeVaults(state.vault, incoming);
-  }
-
-  state.vault = target;
-  await persistVault();
-  renderList(); detectCurrentSite();
-  setMsg('vault-msg-list', `Импортировано: ${incoming.length}`);
-  touchActivity();
-}
-
-function promptPassword(title) {
-  return new Promise(resolve => {
-    const modal = $('import-modal');
-    const input = $('import-pass');
-    const msg = $('import-modal-msg');
-    $('import-modal-title').textContent = title;
-    input.value = ''; msg.textContent = '';
-    modal.classList.remove('hidden');
-    setTimeout(() => input.focus(), 50);
-
-    const cleanup = () => {
-      modal.classList.add('hidden');
-      $('import-confirm').onclick = null;
-      $('import-cancel').onclick = null;
-    };
-    $('import-confirm').onclick = () => {
-      const v = input.value;
-      if (!v) { msg.textContent = 'Введите пароль'; msg.className = 'msg error'; return; }
-      cleanup(); resolve(v);
-    };
-    $('import-cancel').onclick = () => { cleanup(); resolve(null); };
-    input.onkeydown = e => {
-      if (e.key === 'Enter') $('import-confirm').click();
-      if (e.key === 'Escape') $('import-cancel').click();
-    };
-  });
-}
-
-async function detectCurrentSite() {
-  const box = $('detect-box');
-  box.classList.add('hidden');
-  state.detectedDomain = '';
-
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.url) return;
-    const url = new URL(tab.url);
-    if (!/^https?:$/.test(url.protocol)) return;
-
-    const domain = url.hostname.replace(/^www\./, '');
-    state.detectedDomain = domain;
-
-    const img = $('detect-favicon');
-    const src = faviconUrl(domain, 32);
-    if (src) { img.src = src; img.style.visibility = 'visible'; }
-
-    if (!$('site').value) $('site').value = domain;
-
-    chrome.tabs.sendMessage(tab.id, { action: 'detect' }, (resp) => {
-      if (chrome.runtime.lastError) return;
-      const uname = resp?.username?.trim();
-      if (uname && !$('user').value) $('user').value = uname;
-      updateDetectBox(domain, uname);
-    });
-    updateDetectBox(domain, '');
-  } catch {}
-}
-
-function updateDetectBox(domain, username) {
-  const box = $('detect-box');
-  const text = $('detect-text');
-  const fillBtn = $('detect-fill');
-
-  const match = state.vault.find(e => {
-    const s = domainKey(e.site);
-    return s === domain.toLowerCase() || domain.toLowerCase().includes(s);
-  });
-
-  box.classList.remove('hidden');
-  if (match) {
-    text.innerHTML = `Есть запись: <b>${escapeHtml(match.site)}</b> — ${escapeHtml(match.user)}`;
-    fillBtn.style.display = '';
-    fillBtn.onclick = () => fillOnPage(match);
-  } else {
-    const who = username ? ` (логин: <b>${escapeHtml(username)}</b>)` : '';
-    text.innerHTML = `Текущий сайт: <b>${escapeHtml(domain)}</b>${who}`;
-    fillBtn.style.display = 'none';
-  }
-}
-
-$('search').addEventListener('input', e => {
-  state.query = e.target.value;
-  renderList();
-});
-$('sort-select').addEventListener('change', e => {
-  state.sortPref = e.target.value;
-  chrome.storage.local.set({ sortPref: state.sortPref });
-  renderList();
-});
-
-function getFilteredItems() {
-  const q = state.query.trim().toLowerCase();
-  let items = state.vault.map((item, i) => ({ item, i }));
-  if (q) {
-    items = items.filter(({ item }) =>
-      item.site.toLowerCase().includes(q) || item.user.toLowerCase().includes(q)
-    );
-  }
-  return items;
-}
-
-function buildGroups(items) {
-  const map = new Map();
-  for (const { item, i } of items) {
-    const key = domainKey(item.site);
-    if (!map.has(key)) {
-      map.set(key, { domain: key, displaySite: item.site, items: [] });
-    }
-    map.get(key).items.push({ item, i });
-  }
-  return [...map.values()];
-}
-
-function sortGroups(groups) {
-  const pref = state.sortPref;
-  groups.sort((a, b) => {
-    if (pref === 'site-desc') return b.domain.localeCompare(a.domain);
-    if (pref === 'date-desc' || pref === 'date-asc') {
-      const ma = Math.max(...a.items.map(x => x.item.createdAt || 0));
-      const mb = Math.max(...b.items.map(x => x.item.createdAt || 0));
-      return pref === 'date-desc' ? mb - ma : ma - mb;
-    }
-    return a.domain.localeCompare(b.domain);
-  });
-  for (const g of groups) {
-    g.items.sort((a, b) => {
-      if (pref === 'site-desc') return b.item.user.localeCompare(a.item.user);
-      if (pref === 'site-asc')  return a.item.user.localeCompare(b.item.user);
-      const da = a.item.createdAt || 0, db = b.item.createdAt || 0;
-      return pref === 'date-desc' ? db - da : da - db;
-    });
-  }
-  return groups;
-}
-
-$('toggle-add').onclick = () => {
-  const form = $('add-form');
-  form.classList.toggle('hidden');
-  if (!form.classList.contains('hidden')) { $('site').focus(); detectCurrentSite(); }
+$('import-encrypted').onclick=()=>$('import-file').click();
+$('import-file').onchange=async e=>{
+ const f=e.target.files[0];e.target.value='';if(!f)return;
+ try{
+  const data=JSON.parse(await f.text());
+  if(data.format!=='helium-pm-backup'||!data.vault||!Array.isArray(data.salt))throw Error('Это не зашифрованная копия oPass');
+  let password=null,key;
+  if(JSON.stringify(data.salt)===JSON.stringify(Array.from(state.salt)))key=state.key;
+  else {password=prompt('Введи мастер-пароль от резервной копии');if(!password)return;key=await importAesKey(await deriveRawKey(password,new Uint8Array(data.salt)));}
+  const p=await decryptJSON(key,data.vault.iv,data.vault.data);
+  const c=data.cardsVault?await decryptJSON(key,data.cardsVault.iv,data.cardsVault.data):[];
+  if(!Array.isArray(p)||!Array.isArray(c))throw Error('Повреждённая копия');
+  if(!confirm('Импортировать '+p.length+' паролей и '+c.length+' карт? Текущие записи будут объединены.'))return;
+  const merge=(a,b,k)=>{const m=new Map();for(const x of [...a,...b]){const id=k(x);if(!id)continue;if(!m.has(id)||(x.updatedAt||x.createdAt||0)>=(m.get(id).updatedAt||m.get(id).createdAt||0))m.set(id,x);}return [...m.values()];};
+  state.passwords=merge(state.passwords,p,x=>norm(x.site)+'|'+norm(x.user));
+  state.cards=merge(state.cards,c,x=>x.id||digits(x.number));
+  const now=Date.now();
+  await chrome.storage.local.set({vault:await encryptJSON(state.key,state.passwords),cardsVault:await encryptJSON(state.key,state.cards),updatedAt:now,cardsUpdatedAt:now});
+  chrome.runtime.sendMessage({action:'scheduleSync'}).catch(()=>{});
+  msg('Импортировано: '+p.length+' паролей и '+c.length+' карт',false,'settings-msg');
+ }catch(err){msg(err.message||'Ошибка импорта',true,'settings-msg');}
 };
-
-$('save-btn').onclick = async () => {
-  const site = $('site').value.trim();
-  const user = $('user').value.trim();
-  const pass = $('pass').value;
-  if (!site || !user || !pass) return setMsg('vault-msg', 'Заполните все поля', true);
-
-  state.vault.push({ site, user, pass, createdAt: Date.now() });
-
-  const newKey = domainKey(site);
-  state.expandedGroups[newKey] = true;
-  chrome.storage.local.set({ expandedGroups: state.expandedGroups });
-
-  await persistVault();
-
-  $('site').value = ''; $('user').value = ''; $('pass').value = '';
-  $('add-form').classList.add('hidden');
-  renderList(); detectCurrentSite();
-  setMsg('vault-msg-list', 'Сохранено');
-  touchActivity();
+$('change-master').onclick=async()=>{
+ const old=$('old-master').value,pass=$('new-master').value,repeat=$('repeat-master').value;
+ if(pass.length<8||pass!==repeat)return msg('Новый пароль слишком короткий или не совпадает',true,'settings-msg');
+ try{
+  const check=await importAesKey(await deriveRawKey(old,state.salt));
+  const {vault}=await chrome.storage.local.get('vault');await decryptJSON(check,vault.iv,vault.data);
+  const previousSalt=Array.from(state.salt);
+  const salt=randomSalt(),raw=await deriveRawKey(pass,salt),key=await importAesKey(raw),now=Date.now();
+  await chrome.storage.local.set({salt:Array.from(salt),vault:await encryptJSON(key,state.passwords),cardsVault:await encryptJSON(key,state.cards),updatedAt:now,cardsUpdatedAt:now});
+  await chrome.storage.session.set({key:Array.from(raw),lastActivity:now});
+  state.salt=salt;state.key=key;state.raw=raw;
+  for(const id of ['old-master','new-master','repeat-master'])$(id).value='';
+  const rekey=await chrome.runtime.sendMessage({action:'forceCloudRekey',previousSalt});
+  msg(rekey?.ok?'Пароль изменён и облако перешифровано. На остальных устройствах потребуется восстановление с новым паролем.':'Мастер-пароль изменён локально. Google Drive не обновлён: '+(rekey?.error||'ошибка')+'. Сохрани зашифрованную резервную копию.',!rekey?.ok,'settings-msg');
+ }catch(err){msg('Неверный старый пароль или ошибка перешифрования',true,'settings-msg');}
 };
-
-async function persistVault() {
-  const encrypted = await encryptJSON(state.key, state.vault);
-  await chrome.storage.local.set({ vault: encrypted, updatedAt: Date.now() });
-  chrome.runtime.sendMessage({ action: 'forceSync' }).catch(() => {});
-}
-
-async function deleteEntry(index) {
-  if (!confirm('Удалить запись?')) return;
-  state.vault.splice(index, 1);
-  await persistVault();
-  renderList(); detectCurrentSite();
-  touchActivity();
-}
-
-function toggleGroup(domain) {
-  state.expandedGroups[domain] = !state.expandedGroups[domain];
-  chrome.storage.local.set({ expandedGroups: state.expandedGroups });
-  renderList();
-}
-
-function renderList() {
-  const list = $('list');
-  const items = getFilteredItems();
-  list.innerHTML = '';
-
-  if (state.vault.length === 0) {
-    list.innerHTML = '<div class="empty">Хранилище пусто</div>';
-    return;
-  }
-  if (items.length === 0) {
-    list.innerHTML = '<div class="empty">Ничего не найдено</div>';
-    return;
-  }
-
-  const groups = sortGroups(buildGroups(items));
-  const searching = state.query.trim() !== '';
-
-  for (const group of groups) {
-    if (group.items.length === 1) {
-      list.appendChild(renderEntry(group.items[0].item, group.items[0].i, false));
-    } else {
-      list.appendChild(renderGroup(group, searching));
-    }
-  }
-}
-
-function renderGroup(group, searching) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'group';
-
-  const isExpanded = searching ? true : !!state.expandedGroups[group.domain];
-
-  const header = document.createElement('div');
-  header.className = 'group-header';
-  header.title = searching ? '' : (isExpanded ? 'Свернуть' : 'Развернуть');
-  if (!searching) header.onclick = () => toggleGroup(group.domain);
-
-  const arrow = document.createElement('span');
-  arrow.className = 'group-arrow';
-  arrow.textContent = isExpanded ? '▾' : '▸';
-  header.appendChild(arrow);
-
-  header.appendChild(makeFaviconImg(group.displaySite, 18));
-
-  const label = document.createElement('span');
-  label.className = 'group-label';
-  label.textContent = group.domain;
-  header.appendChild(label);
-
-  const count = document.createElement('span');
-  count.className = 'group-count';
-  count.textContent = group.items.length;
-  header.appendChild(count);
-
-  wrapper.appendChild(header);
-
-  if (isExpanded) {
-    const body = document.createElement('div');
-    body.className = 'group-body';
-    for (const { item, i } of group.items) body.appendChild(renderEntry(item, i, true));
-    wrapper.appendChild(body);
-  }
-  return wrapper;
-}
-
-function renderEntry(item, originalIndex, inGroup = false) {
-  const row = document.createElement('div');
-  row.className = 'entry' + (inGroup ? ' in-group' : '');
-
-  if (!inGroup) row.appendChild(makeFaviconImg(item.site, 20));
-
-  const label = document.createElement('div');
-  label.className = 'label';
-
-  if (!inGroup) {
-    const siteRow = document.createElement('div');
-    siteRow.className = 'site-row';
-    const siteEl = document.createElement('span');
-    siteEl.className = 'site';
-    siteEl.textContent = item.site;
-    siteRow.appendChild(siteEl);
-    const dateStr = shortDate(item.createdAt);
-    if (dateStr) {
-      const when = document.createElement('span');
-      when.className = 'when';
-      when.textContent = dateStr;
-      siteRow.appendChild(when);
-    }
-    label.appendChild(siteRow);
-  }
-
-  const fields = document.createElement('div');
-  fields.className = 'fields';
-
-  const loginChip = buildChip({
-    icon: '👤', text: item.user, title: 'Копировать логин',
-    onCopy: () => copyToClipboard(item.user, loginChip)
-  });
-  fields.appendChild(loginChip);
-
-  const passChip = buildChip({
-    icon: '🔑', text: '••••••••', masked: true, title: 'Копировать пароль',
-    onCopy: () => copyToClipboard(item.pass, passChip)
-  });
-  fields.appendChild(passChip);
-
-  const passTextEl = passChip.querySelector('.chip-text');
-  const eyeBtn = document.createElement('button');
-  eyeBtn.className = 'eye-btn';
-  eyeBtn.type = 'button';
-  eyeBtn.textContent = '👁';
-  eyeBtn.title = 'Показать пароль';
-  let revealed = false;
-  eyeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    revealed = !revealed;
-    passTextEl.textContent = revealed ? item.pass : '••••••••';
-    passTextEl.classList.toggle('masked', !revealed);
-    eyeBtn.textContent = revealed ? '🙈' : '👁';
-    eyeBtn.title = revealed ? 'Скрыть пароль' : 'Показать пароль';
-  });
-  fields.appendChild(eyeBtn);
-
-  label.appendChild(fields);
-  row.appendChild(label);
-
-  const actions = document.createElement('div');
-  actions.className = 'actions';
-
-  // Синяя кнопка со стрелкой убрана — осталась только кнопка удаления
-  const del = document.createElement('button');
-  del.className = 'danger small';
-  del.textContent = '×';
-  del.title = 'Удалить';
-  del.onclick = () => deleteEntry(originalIndex);
-
-  actions.appendChild(del);
-  row.appendChild(actions);
-
-  return row;
-}
-
-function buildChip({ icon, text, masked = false, title, onCopy }) {
-  const chip = document.createElement('div');
-  chip.className = 'chip';
-  chip.setAttribute('role', 'button');
-  chip.setAttribute('tabindex', '0');
-  chip.title = title;
-
-  const iconEl = document.createElement('span');
-  iconEl.className = 'chip-icon';
-  iconEl.textContent = icon;
-  chip.appendChild(iconEl);
-
-  const textEl = document.createElement('span');
-  textEl.className = 'chip-text' + (masked ? ' masked' : '');
-  textEl.textContent = text;
-  chip.appendChild(textEl);
-
-  const copyEl = document.createElement('span');
-  copyEl.className = 'chip-copy';
-  copyEl.textContent = '📋';
-  chip.appendChild(copyEl);
-
-  chip.addEventListener('click', onCopy);
-  chip.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onCopy(); }
-  });
-  return chip;
-}
-
-function fillOnPage(item) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]?.id) return;
-    chrome.tabs.sendMessage(
-      tabs[0].id,
-      { action: 'fill', user: item.user, pass: item.pass },
-      (resp) => {
-        if (chrome.runtime.lastError || !resp?.success) {
-          setMsg('vault-msg-list', 'Не удалось заполнить на этой странице', true);
-        } else {
-          setMsg('vault-msg-list', 'Заполнено');
-          touchActivity();
-        }
-      }
-    );
-  });
-}
-
-const syncBtn = $('sync-btn');
-if (syncBtn) {
-  syncBtn.onclick = async () => {
-    syncBtn.disabled = true;
-    setMsg('vault-msg-list', 'Синхронизация...');
-
-    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
-      syncBtn.disabled = false;
-      if (resp?.ok) {
-        if (resp.action === 'downloaded') {
-          await reloadVault();
-          renderList();
-          detectCurrentSite();
-        }
-        setMsg('vault-msg-list', 'Синхронизировано ✓');
-      } else {
-        const errText = resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка синхронизации';
-        setMsg('vault-msg-list', errText, true);
-      }
-    });
-  };
-}
-
-// Переключение экранов настроек
-const settingsBtn = $('settings-btn');
-if (settingsBtn) {
-  settingsBtn.onclick = () => showView('settings');
-}
-const settingsBackBtn = $('settings-back-btn');
-if (settingsBackBtn) {
-  settingsBackBtn.onclick = () => showView('vault');
-}
-
-// 1. Смена мастер-пароля
-const chgPassBtn = $('chg-pass-btn');
-if (chgPassBtn) {
-  chgPassBtn.onclick = async () => {
-    const oldPass = $('chg-old-pass').value;
-    const newPass = $('chg-new-pass').value;
-    const newPass2 = $('chg-new-pass2').value;
-
-    if (!oldPass || !newPass || !newPass2) {
-      return setMsg('chg-pass-msg', 'Заполните все поля', true);
-    }
-    if (newPass.length < 8) {
-      return setMsg('chg-pass-msg', 'Новый пароль должен быть от 8 символов', true);
-    }
-    if (newPass !== newPass2) {
-      return setMsg('chg-pass-msg', 'Новые пароли не совпадают', true);
-    }
-
-    try {
-      chgPassBtn.disabled = true;
-      setMsg('chg-pass-msg', 'Перешифрование базы...');
-
-      // Проверка текущего пароля
-      const oldRawKey = await deriveRawKey(oldPass, state.salt);
-      const oldKey = await importAesKey(oldRawKey);
-      const { vault } = await chrome.storage.local.get('vault');
-
-      let decryptedData;
-      try {
-        decryptedData = await decryptJSON(oldKey, vault.iv, vault.data);
-      } catch {
-        chgPassBtn.disabled = false;
-        return setMsg('chg-pass-msg', 'Неверный текущий пароль', true);
-      }
-
-      // Генерация новой соли и создание нового ключа
-      const newSalt = randomSalt();
-      const newRawKey = await deriveRawKey(newPass, newSalt);
-      const newKey = await importAesKey(newRawKey);
-
-      // Зашифрование базы новыми данными
-      const encrypted = await encryptJSON(newKey, decryptedData);
-      const updatedAt = Date.now();
-
-      // Сохранение локально и в сессии
-      await chrome.storage.local.set({
-        vault: encrypted,
-        salt: Array.from(newSalt),
-        updatedAt: updatedAt
-      });
-      await chrome.storage.session.set({ key: Array.from(newRawKey) });
-
-      state.key = newKey;
-      state.salt = newSalt;
-
-      // Синхронизация новой зашифрованной базы с Google Drive
-      setMsg('chg-pass-msg', 'Синхронизация с облаком...');
-      chrome.runtime.sendMessage({ action: 'forceSync' }, () => {
-        chgPassBtn.disabled = false;
-        $('chg-old-pass').value = '';
-        $('chg-new-pass').value = '';
-        $('chg-new-pass2').value = '';
-        setMsg('chg-pass-msg', 'Пароль успешно изменен и синхронизирован ✓');
-      });
-    } catch (e) {
-      chgPassBtn.disabled = false;
-      setMsg('chg-pass-msg', `Ошибка: ${e.message}`, true);
-    }
-  };
-}
-
-// 2. Полный сброс хранилища
-const resetBtn = $('factory-reset-btn');
-if (resetBtn) {
-  resetBtn.onclick = async () => {
-    const confirmReset = confirm('Вы уверены? Все локальные пароли будут удалены. Если они не сохранены отдельно, доступ к ним будет потерян.');
-    if (!confirmReset) return;
-
-    await chrome.storage.local.clear();
-    await chrome.storage.session.clear();
-    state.key = null;
-    state.salt = null;
-    state.items = [];
-
-    showView('setup');
-    setMsg('setup-msg', 'Хранилище очищено. Создайте новый мастер-пароль.');
-  };
-}
-
-// Восстановление из Google Drive
-const restoreBtn = $('restore-drive-btn');
-console.log('Кнопка восстановления в DOM:', restoreBtn);
-
-if (restoreBtn) {
-  restoreBtn.onclick = async () => {
-    console.log('Клик по кнопке восстановления сработал');
-    restoreBtn.disabled = true;
-    setMsg('setup-msg', 'Подключение к Google Drive...');
-
-    chrome.runtime.sendMessage({ action: 'forceSync' }, async (resp) => {
-      console.log('Ответ от background:', resp);
-      restoreBtn.disabled = false;
-      if (resp?.ok && resp.action === 'downloaded') {
-        const local = await chrome.storage.local.get(['salt']);
-        if (local.salt) {
-          state.salt = new Uint8Array(local.salt);
-          showView('lock');
-          setMsg('unlock-msg', 'Данные загружены. Введите мастер-пароль');
-        } else {
-          setMsg('setup-msg', 'В облаке нет сохраненных данных', true);
-        }
-      } else if (resp?.ok) {
-        setMsg('setup-msg', 'Копия на Google Диске не найдена', true);
-      } else {
-        setMsg('setup-msg', resp?.error ? `Ошибка: ${resp.error}` : 'Ошибка загрузки из облака', true);
-      }
-    });
-  };
-} else {
-  console.error('Ошибка: элемент с id="restore-drive-btn" не найден в popup.html');
-}
-  
-
-init();
+$('factory-reset').onclick=async()=>{
+ if(!confirm('УДАЛИТЬ все локальные пароли, карты и настройки? Это действие необратимо без резервной копии.'))return;
+ if(!confirm('Подтверди удаление локального хранилища oPass.'))return;
+ await chrome.storage.local.clear();await chrome.storage.session.clear();state.key=null;state.raw=null;state.passwords=[];state.cards=[];show('setup');
+};
+startup().catch(err=>{show('lock');msg(err.message||'Ошибка загрузки',true,'lock-msg');});
